@@ -1,0 +1,25 @@
+{
+ 	"name": "backbone",
+	"version": "0.0.1",
+	"description": "learning backbone by rewriting it",
+	"main": "server.js",
+	"scripts": {
+		"start": "node server.js"
+	},
+	"dependencies": {
+    "express": "^4.12.4"
+	},
+	"engines": {
+		"node": "4.4.3"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://hyperdev.com/#!/project/welcome-project"
+	},
+	"keywords": [
+		"node",
+		"hyperdev",
+		"express"
+	],
+	"license": "MIT"
+}
