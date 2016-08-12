@@ -626,8 +626,8 @@
         url: function(){
             var base =
                     _.result(this, 'urlRoot') ||
-                            _.result(this.collection, 'url') ||
-                            urlError();
+                    _.result(this.collection, 'url') ||
+                    urlError();
             if(this.isNew()) return base;
             var id = this.get(this.idAttribute);
             return base.replace(/[^\/]$/, '$&/') + encodeURIComponent(id);
@@ -665,5 +665,509 @@
     addUnderscoreMethods(Model, modelMethods, 'attributes');
 
 
+    // Backbone Collection
+    // analogue for table of full data (model - is a row of data)
+    var Collection = Backbone.Collection = function (models, options) {
+        options || (options = {});
+        this.preinitialize.apply(this, arguments);
+        if(options.model) this.model = options.model;
+        if(options.comparator !== void 0) this.comparator = options.comparator;
+        this._reset();
+        this.initialize.apply(this, arguments);
+        if(models) this.reset(models, _.extend({silent: true}, options));
+    };
+
+    // def options for collection#set
+    var setOptions = {add: true, remove: true, merge: true};
+    var addOptions = {add: true, remove: false};
+
+    // splice insert into arr at index 'at'
+    var splice = function(array, insert, at){
+        at = Math.min(Math.max(at, 0), array.length);
+        var tail = Array(array.length - at);
+        var length = insert.length;
+        var i;
+        for(i = 0; i < tail.length; i++) tail[i] = array[i + at];
+        for(i = 0; i < length; i++) array[i+at] = insert[i];
+        for(i = 0; i < tail.length; i++) array[i+length+at] = tail[i];
+    };
+
+    // define methods:
+    _.extend(Collection.prototype, Events, {
+        // def model
+        model: Model,
+
+        preinitialize: function(){},
+        itialize: function(){},
+
+        // array of models attrs
+        toJSON: function(options){
+            return this.map(function(model){ return model.toJSON(options); });
+        },
+
+        sync: function(){
+            return Backbone.sync.apply(this, arguments);
+        },
+
+        // adds model/list of models/js objects/combination
+        add: function(models, options){
+            return this.set(models, _.extend({merge: false}, options, addOptions));
+        },
+
+        // remove a model or a list of models from set
+        remove: function(models, options){
+            options = _.extend({}, options);
+            var singular = !_.isArray(models);
+            models = singular ? [models] : models.slice();
+            var removed = this._removeModels(models, options);
+            if(!options.silent && removed.length){
+                options.changes = {added: [], merged: [], removed: removed};
+                this.trigger('update', this, options);
+            }
+            return singular ? removed[0] : removed;
+        },
+
+        // similar to model#set
+        set: function(models, options){
+            if(models == null) return;
+
+            options = _.extend({}, setOptions, options);
+            if(options.parse && !this._isModel(models)){
+                models = this.parse(models, options) || [];
+            }
+
+            var singular = !_.isArray(models);
+            models = singular ? [models] : models.slice();
+
+            var at = options.at;
+            if(at != null) at = +at;
+            if(at > this.length) at = this.length;
+            if(at < 0) at += this.length + 1;
+
+            var set = [];
+            var toAdd = [];
+            var toMerge = [];
+            var toRemove = [];
+            var modelMap = {};
+
+            var add = options.add;
+            var merge = options.merge;
+            var remove = options.remove;
+
+            var sort = false;
+            var sorable = this.comparator && at == null && options.sort !== false;
+            var sortAttr = _.isString(this.comparator) ? this.comparator : null;
+
+            // turn bare objs into model references, and prevent invalid models to be added
+            var model, i;
+            for(i=0; i < models.length; i++){
+                model = models[i];
+
+                // prevent adding duplicates, merge to existing model
+                var existing = this.get(model);
+                if(existing){
+                    if(merge && model !== existing){
+                        var attrs = this._isModel(model) ? model.attributes : model;
+                        if(options.parse) attrs = existing.parse(attrs, options);
+                        existing.set(attrs, options);
+                        toMerge.push(exesting);
+                        if(sortable && !sort) sort = existing.hasChanged(sortAttr);
+                    }
+                    if(!modelMap[existing.cid]){
+                        modelMap[existing.cid] = true;
+                        set.push(existing);
+                    }
+                    models[i] = existing;
+                    // if this is a new, valid model, push it to tho 'toAdd'
+                } else if(add){
+                    model = models[i] = this._prepareModel(model, options);
+                    if(model){
+                        toAdd.push(model);
+                        this._addReference(model, options);
+                        modelMap[model.cid] = true;
+                        set.push(model);
+                    }
+                }
+            }
+
+            // remove stale models
+            if(remove){
+                for(i=0; i < this.length; i++){
+                    model = this.models[i];
+                    if(!modelMap[model.cid]) toRemove.push(model);
+                }
+                if(toRemove.length) this._removeModels(toRemove, options);
+            }
+
+            // is sorting needed?
+            var orderChanged = false;
+            var replace = !sortable && add && remove;
+            if(set.length && replace){
+                orderChanged = this.length !== set.length || _.some(this.models, function (m, index) {
+                            return m !== set[index];
+                        });
+                this.models.length = 0;
+                splice(this.models, set, 0);
+                this.length = this.models.length;
+            } else if(toAdd.length){
+                if(sorable) sort = true;
+                splice(this.models, toAdd, at==null ? this.length : at);
+                this.length = this.models.length;
+            }
+
+            // try to silently sort the collection
+            if(sort) this.sort({silent: true});
+
+            // unless silenced, fire events
+            if(!options.silent){
+                for(i = 0; i < toAdd.length; i++){
+                    if(at != null) options.index = at + i;
+                    model = toAdd[i];
+                    model.trigger('add', model, this, options);
+                }
+                if(sort || orderChanged) this.trigger('sort', this, options);
+                if(toAdd.length || toRemove.length || toMerge.length){
+                    options.changes = {
+                        added: toAdd,
+                        removed: toRemove,
+                        merged: toMerge
+                    };
+                    this.trigger('update', this, options);
+                }
+            }
+
+            return singular ? models[0] : models;
+        },
+
+        // when you have more ites than you want to add or remove individually,
+        // you can reset the entire set with a new list of models, without firing
+        // any granular 'add' or 'remove' events. fires 'reset' when finished.
+        // useful for bulk operations and optimization
+        reset: function (models, options) {
+            options = options ? _.clone(options) : {};
+            for (var i = 0; i < this.model.length; i++) {
+                this._removeReference(this.models[i], options);
+            }
+            options.previousModels = this.models;
+            this._reset();
+            models = this.add(models, _.extend({silent: true}, options));
+            if(!options.silent) this.trigger('reset', this, options);
+            return models;
+        },
+
+        push: function (model, options) {
+            return this.add(model, _.extend({at: this.length}, options));
+        },
+
+        pop: function (options) {
+            var model = this.at(this.length-1);
+            return this.remove(model, options);
+        },
+
+        unshift: function (model, options) {
+            return this.add(model, _.extend({at: 0}, options));
+        },
+
+        shift: function (options) {
+            var model = this.at(0);
+            return this.remove(model, options);
+        },
+
+        slice: function () {
+            return slice.apply(this.models, arguments);
+        },
+
+        // get a model by id, cid, model obj id or attrs obj that is transformed by modelId
+        get: function (obj) {
+            if(obj==null) return void 0;
+            return this._byId[obj] ||
+                            this._byId[this.modelId(obj.attributes || obj)] ||
+                            obj.cid && this._byId[obj.cid];
+        },
+
+        // if model in collection
+        has: function (obj) {
+            return this.get(obj) != null;
+        },
+
+        // get model by index
+        at: function (index) {
+            if(index < 0) index += this.length;
+            return this.models[index];
+        },
+
+        // return models with matching attrs
+        // useful for simple cases of filter
+        where: function (attrs, first) {
+            return this[first ? 'find' : 'filter'](attrs);
+        },
+
+        // retun the first model with matching attrs
+        // useful for simple cases of 'find'
+        findWhere: function (attrs) {
+            return this.where(attrs, true);
+        },
+
+        // force collection to resort itself
+        // u dont need to call this under normal circumstances, as the set
+        // will maintain sort order
+        sort: function (options) {
+            var comparator = this.comparator;
+            if(!comparator) throw new Error('Cannot sort a set without comparator');
+            options || (options = {});
+
+            var length = comparator.length;
+            if(_.isFunction(comparator)) comparator = _.bind(comparator, this);
+
+            // run sot based on type of comparator
+            if(length ===1 || _.isString(comparator)){
+                this.models = this.sortBy(comparator);
+            } else {
+                this.models.sort(comparator);
+            }
+            if(!options.silent) this.trigger('sort', this, options);
+            return this;
+        },
+
+        // pluck an attr from each model in collection
+        pluck: function (attr) {
+            return this.map(attr + '');
+        },
+
+        // fetch def set of models
+        // reset the collection on arrive
+        // if reset is true, res date will be passed through 'reset' instead of 'set'
+        fetch: function (options) {
+            options = _.extend({parse: true}, options);
+            var success = options.success;
+            var collection = this;
+            options.success = function (resp) {
+                var method = options.reset ? 'reset' : 'set';
+                collection[method](resp, options);
+                if(success) success.call(options.context, collection, resp, options);
+                collection.trigger('sync', collection, resp, options);
+            };
+
+            wrapError(this, options);
+            return this.sync('read', this, options);
+        },
+
+        // create a new instance of a model in this collection
+        // add the model to the collection immediately unless 'wait: true' - waiting server to agree
+        create: function (model, options) {
+            options = options ? _.clone(options) : {};
+            var wait = options.wait;
+            model = this._prepareModel(model, options);
+            var collection = this;
+            var success = options.success;
+            options.success = function (m, resp, callbackOpts) {
+                if(wait) collection.add(m, callbackOpts);
+                if(success) success.call(callbackOpts.context, m, resp, callbackOpts);
+            };
+            model.save(null, options);
+            return model;
+        },
+
+        // parse converts res into a list of models to be added to the collection
+        parse: function (resp, options) {
+            return resp;
+        },
+
+        // create a new collection with an identical list of models at this one
+        clone: function () {
+            return new this.constructor(this.models, {
+                model: this.model,
+                comparator: this.comparator
+            });
+        },
+
+        // define how to uniquely models in the collection
+        modelId: function (attrs) {
+            return attrs[this.model.prototype.idAttribute || 'id'];
+        },
+
+        // get an itearator of all models in this collection
+        values: function () {
+            return new CollectionIterator(this, ITERATOR_VALUES);
+        },
+
+        // get an iterator of all model IDs in this collection
+        keys: function () {
+            return new CollectionIterator(this, ITERATOR_KEYSVALUES);
+        },
+
+        // get an iterator of all [ID, model] tuples in this collection
+        entries: function () {
+            return new CollectionIterator(this, ITERATOR_KEYSVALUES);
+        },
+
+        // private method to reset all internal state
+        // called when the collection is first initialized or reset
+        _reset: function () {
+            this.length = 0;
+            this.models = [];
+            this._byId = {};
+        },
+
+        // preparea a hash of attrs (or other model) to be added to this collection
+        _prepareModel: function (attrs, options) {
+            if(this._isModel(attrs)){
+                if(!attrs.collecion) attrs.collection = this;
+                return attrs;
+            }
+            options = options ? _.clone(options) : {};
+            options.collection = this;
+            var model = new this.model(attrs, options);
+            if(!model.validationError) return model;
+            this.trigger('invalid', this, model.validationError, options);
+            return false;
+        },
+
+        // internal method both for remove and set
+        _removeModels: function (models, options) {
+            var removed = [];
+            for (var i = 0; i < models.length; i++) {
+                var model = this.get(models[i]);
+                if(!model) continue;
+
+                var index = this.indexOf(model);
+                this.models.splice(index, 1);
+                this.length--;
+
+                // remove references before triggering 'remove' event to prevent an infinete loop
+                delete this._byId[model.cid];
+                var id = this.modelId(model.attributes);
+                if(id!=null) delete this._byId[id];
+
+                if(!options.silent) {
+                    options.index = index;
+                    model.trigger('remove', model, this, options);
+                }
+
+                removed.push(model);
+                this._removeReference(model, options);
+            }
+
+            return removed;
+        },
+
+        _isModel: function (model) {
+            return model instanceof Model;
+        },
+
+        // tie model to collection
+        _addReference: function (model, options) {
+            this._byId[model.cid] = model;
+            var id = this.modelId(model.attributes);
+            if(id != null) this._byId[id] = model;
+            model.on('all', this._onModelEvent, this);
+        },
+
+        // internal method to sever a model's ties to a collection
+        _removeReference: function (model, options) {
+            delete this._byId[model.cid];
+            var id = this.modelId(model.attributes);
+            if(id != null) delete this._byId[id];
+            if(this === model.collection) delete model.collection;
+            model.off('all', this._onModelEvent, this);
+        },
+
+        // Internal method called every time a model in the set fires an event
+        // sets need to update their indexes when models change ids.
+        // all ither events simply proxy through. 'add' and 'remove' events that originate
+        // in other collections are ignored
+        _onModelEvent: function (event, model, collection, options) {
+            if(model) {
+                if((event === 'add' || event === 'remove') && collection !== this) return;
+                if(event === 'destroy') this.remove(model, options);
+                if(event === 'change'){
+                    var prevId = this.modelId(model.previousAttributes());
+                    var id = this.modelId(model.attributes);
+                    if(prevId !== id) {
+                        if(prevId != null) delete this._byId[prevId];
+                        if(id != null) this._byId[id] = model;
+                    }
+                }
+            }
+
+            this.trigger.apply(this, arguments);
+        }
+
+    });
+
+    // defining @@iterator method (in es2015 Symbol.iterator)
+    var $$iterator = typeof Symbol === 'function' && Symbol.iterator;
+    if($$iterator) {
+        Collection.prototype[$$iterator] = Collection.prototype.values;
+    }
+
+    // CollectionIterator
+
+    // allow 'for of' loops
+    var CollectionIterator = function (collection, kind) {
+        this._collection = collection;
+        this._kind = kind;
+        this._index = 0;
+    };
+
+    // this 'enum' defs the three possible kinds of vals
+    // which can be ommited by a CollectionIterator that
+    // correspond to the values(), keys() and entries()
+    var ITERATOR_VALUES = 1;
+    var ITERATOR_KEYS = 2;
+    var ITERATOR_KEYSVALUES = 3;
+
+    if($$iterator) {
+        CollectionIterator.prototype[$$iterator] = function () {
+            return this;
+        };
+    }
+
+    CollectionIterator.prototype.next = function () {
+        if(this._collection) {
+            // if long enough
+            if(this._index < this._collection.length) {
+                var model = this._collection.at(this._index);
+                this._index++;
+
+                var  value;
+                if(this._kind === ITERATOR_VALUES) {
+                    value = model;
+                } else {
+                    var id = this._collection.modelId(model.attributes);
+                    if(this._kind === ITERATOR_KEYS) {
+                        value = id;
+                    } else {
+                        value = [id, model];
+                    }
+                }
+
+                return {value: value, done: false};
+            }
+
+            // once exhausted, remove the reference to the collection so future
+            // calls to the next method always return done
+            this._collection = void 0;
+        }
+
+        return {value: void 0, done: true};
+    };
+
+    // underscore methods of Collection
+    var collectionMethods = {
+        forEach: 3, each: 3, map: 3, collect: 3, reduce: 0,
+        foldl: 0, inject: 0, reduceRight: 0, foldr: 0, find: 3, detect: 3, filter: 3,
+        select: 3, reject: 3, every: 3, all: 3, some: 3, any: 3, include: 3, includes: 3,
+        contains: 3, invoke: 0, max: 3, min: 3, toArray: 1, size: 1, first: 3,
+        head: 3, take: 3, initial: 3, rest: 3, tail: 3, drop: 3, last: 3,
+        without: 0, difference: 0, indexOf: 3, shuffle: 1, lastIndexOf: 3,
+        isEmpty: 1, chain: 1, sample: 3, partition: 3, groupBy: 3, countBy: 3,
+        sortBy: 3, indexBy: 3, findIndex: 3, findLastIndex: 3
+    };
+
+    // mix in each Undescore method as a proxy to 'Collection#models'
+    addUnderscoreMethods(Collection, collectionMethods, 'models');
+
 
 });
+
