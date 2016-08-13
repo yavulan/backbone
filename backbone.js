@@ -1169,5 +1169,242 @@
     addUnderscoreMethods(Collection, collectionMethods, 'models');
 
 
-});
+    // Backbone.View
+    // --------------
 
+    // Backbone views are js object that represents
+    // a logical chuunk of UI in the DOM
+
+    // creating a view creates its initial el outside the DOM,
+    // if an existing el is not provided
+    var View = Backbone.View = function (options) {
+        this.cid = _.uniqueId('view');
+        this.preinitialize.apply(this, arguments);
+        _.extend(this, _.pick(options, viewOptions));
+        this._ensureElement();
+        this.initialize.apply(this, arguments);
+    };
+
+    // cached regex to split keys for 'delegate'
+    var delegateEventSplitter = /^(\S+)\s*(.*)$/;
+
+    // list of view options to be set as properties
+    var viewOptions = ['model', 'collection', 'el', 'id', 'attributes', 'className', 'tagName', 'events'];
+
+    // setup inheritable properties
+    _.extend(View.prototype, Events, {
+        // def 'tagName'
+        tagName: 'div',
+
+        // jQuery delegate for element lookup, scoped to DOM els within the
+        // current view. This should be prefered to global lookup if possible
+        $: function (selector) {
+            return this.$el.find(selector);
+        },
+
+        preinitialize: function () {
+
+        },
+
+        initialize: function () {
+
+        },
+
+        // render is the core function that your view should override, in order
+        // to populate its el (this.el), with the appropriate html
+        // the convention is for render to always return this
+        render: function () {
+            return this;
+        },
+
+        remove: function () {
+            this._removeElement();
+            this.stopListening();
+            return this;
+        },
+
+        _removeElement: function () {
+            this.$el.remove();
+        },
+
+        setElement: function (element) {
+            this.undelegateEvents();
+            this._setElement(element);
+            this.delegateEvents();
+            return this;
+        },
+
+        // creates 'this.el' and 'this.$el' references for this view using the
+        // given 'el'. 'el' can be a css selector or a html string, a jQuery context or an el
+        // subclasses can override this to utilize an alternative DOM manipulation API
+        // and are only required to set the 'this.el' property
+        _setElement: function (el) {
+            this.$el = el instanceof Backbone.$ ? el : Backbone.$(el);
+            this.el = this.$el[0];
+        },
+
+        // set callbacks, where 'this.events' is a hash of
+        //
+        // {'event selector' : 'callback'}
+        //
+        //      {
+        //          'mousedown .title' : 'edit',
+        //          'click .button' : 'save',
+        //          'click .open' : function(e) {...}
+        //      }
+        // pairs. Callbacks will be bound to the view, with 'this' set properly.
+        // Uses event delegation for efficiency.
+        // Omitting the selector binds the event to 'this.el'.
+        delegateEvents: function (events) {
+            events || (events = _.result(this, 'events'));
+            if(!events) return this;
+            this.undelegateEvents();
+            for(var key in events) {
+                var method = events[key];
+                if(!_.isFunction(method)) method = this[method];
+                if(!method) continue;
+                var match = key.match(delegateEventSplitter);
+                this.delegate(match[1], match[2], _.bind(method, this));
+            }
+            return this;
+        },
+
+        // add a single event listener to the views el (or a child el usong selector)
+        // this only works for delegate-able events: not 'focus', 'blur', and not
+        // 'change', 'submit', and 'reset' in IE.
+        delegate: function (eventName, selector, listener) {
+            this.$el.on(eventName + '.delegateEvents' + this.cid, selector, listener);
+            return this;
+        },
+
+        // clears all callbacks previously bound to the view by 'delegateEvents'
+        // for multiple views attached to same DOM el
+        undelegateEvents: function () {
+            if(this.$el) this.$el.off('.delegateEvents' + this.cid);
+            return this;
+        },
+
+        // selector and listener are both optional
+        undelegate: function (eventName, selector, listener) {
+            this.$el.off(eventName + '.delegateEvents' + this.cid, selector, listener);
+            return this;
+        },
+
+        // produce a DOM el to be assigned to your view
+        // exposed for subclasses using an alt DOM api
+        _createElement: function (tagName) {
+            return document.createElement(tagName);
+        },
+
+        // ensure that the view has a DOM el to render into
+        // if this.el is a str, pass through '$()', take first el and re-assign to el
+        // otherwise, create an el from the id, className and tagName props
+        _ensureElement: function () {
+            if(!this.el) {
+                var attrs = _.extend({}, _.result(this, 'attributes'));
+                if(this.id) attrs.id = _.result(this, 'id');
+                if(this.className) attrs['class'] = _.result(this, 'className');
+                this.setElement(this._createElement(_.result(this, 'tagName')));
+                this._setAttributes(attrs);
+            } else {
+                this.setElement(_.result(this, 'el'));
+            }
+        },
+
+        // set attr from a hash on this views el
+        _setAttributes: function (attributes) {
+            this.$el.attr(attributes);
+        }
+
+    });
+
+
+    // Backbone.sync
+    // -------------
+
+    // override this function if needed
+    // by def, makes a RESTful Ajax req to the models url()
+    // possible customizations:
+    //  use 'setTimeout' to batch radid-fire updates into a single req
+    //  send up the models as XML instead of JSON
+    //  persist models via WebSockets instead of Ajax
+    //
+    // turn on Backbone.emulateHTTP in order to send PUT and DELETE reqs
+    // as POST, with a _method param containing the true HTTP method,
+    // as well as all reqs with the body as `application/x-www-form-urlencoded`
+    // instead of `application/json` with the model in a param named `model`
+    // useful when interfacing with server-side langs like PHP
+    // that make it difficult to read the body of PUT reqs
+    Backbone.sync = function (method, model, options) {
+        var type = methodMap[method];
+
+        _.defaults(options || (options = {}), {
+            emulateHTTP: Backbone.emulateHTTP,
+            emulateJSON: Backbone.emulateJSON
+        });
+
+        var params = {type: type, dataType: 'json'};
+
+        // ensure that we have URL
+        if(!options.url) {
+            params.url = _.result(model, 'url') || urlError();
+        }
+
+        // ensure that we have appropriate req data
+        if(options.data == null && model && (method === 'create' || method === 'update' || method === 'patch')){
+            params.contentType = 'application/json';
+            params.data = JSON.stringify(options.attrs || model.toJSON(options));
+        }
+
+        // for older servers, emulate JSON by encodeing the req into a HTML-form
+        if(options.emulateJSON) {
+            params.contentType = 'application/x-www-form-urlencoded';
+            params.data = params.data ? {model: params.data} : {};
+        }
+
+        // for older servers, emulate HTTP by mimicking the HTTP method with '_method'
+        // and an 'X-HTTP-Method-Override' header
+        if(options.emulateHTTP && (type === 'PUT' || type === 'DELETE' || type === 'PATCH')){
+            params.type = 'POST';
+            if(options.emulateJSON) params.data._method = type;
+            var beforeSend = options.beforeSend;
+            options.beforeSend = function (xhr) {
+                xhr.setRequestHeader('X-HTTP-Method-Override', type);
+                if(beforeSend) return beforeSend.apply(this, arguments);
+            };
+        }
+
+        // dont process data on a non-GET req
+        if(params.type !== 'GET' && !options.emulateJSON){
+            params.processData = false;
+        }
+
+        // pass along 'textStatus' and 'errorThrown' from jQuery
+        var error = options.error;
+        options.error = function (xhr, textStatus, errorThrown) {
+            options.textStatus = textStatus;
+            options.errorThrown = errorThrown;
+            if(error) error.call(options.context, xhr, textStatus, errorThrown);
+        };
+
+        // make the req, allowing the user to override any Ajax opts
+        var xhr = options.xhr = Backbone.ajax(_extend(params, options));
+        model.trigger('request', model, xhr, options);
+        return xhr;
+    };
+
+    // map from CRUD to HTTP for our default 'Backbone.sync' implementation
+    var methodMap = {
+        'create' : 'POST',
+        'update' : 'PUT',
+        'patch'  : 'PATCH',
+        'delete' : 'DELETE',
+        'read'   : 'GET'
+    };
+
+    // set def Backbone.ajax to proxy through to $
+    Backbone.ajax = function () {
+        return Backbone.$.ajax.apply(Backbone.$, arguments);
+    };
+    
+    
